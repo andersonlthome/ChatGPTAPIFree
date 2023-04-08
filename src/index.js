@@ -6,7 +6,14 @@ import fetch from 'node-fetch';
 
 const port = parseInt(process.env.PORT || '8080', 10);
 const api_keys = JSON.parse(process.env.API_KEYS);
+console.info('API keys:', api_keys.length);
 const upstreamUrl = 'https://api.openai.com/v1/chat/completions';
+
+import admin from 'firebase-admin';
+import serviceAccount from '../firebase-sdk-key.json' assert { type: "json" };
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -19,7 +26,9 @@ const randomChoice = (arr) => arr[Math.floor(Math.random() * arr.length)];
 const obfuscateOpenAIResponse = (text) => text.replace(/\borg-[a-zA-Z0-9]{24}\b/g, 'org-************************').replace(' Please add a payment method to your account to increase your rate limit. Visit https://platform.openai.com/account/billing to add a payment method.', '');
 
 const app = express();
+// disables caching using the etag header. This means that clients won't cache the server response based on the entity tag, or etag, which represents the content of the requested resource.
 app.disable('etag');
+// disables the X-Powered-By header. This can be a security risk, as it gives potential attackers information about the technology stack used.
 app.disable('x-powered-by');
 app.use(express.json());
 
@@ -29,6 +38,52 @@ app.use((err, req, res, next) => {
   }
   next();
 });
+
+app.post('/register', async (req, res) => {
+  const { email, password } = req.body;
+  try {
+    const { user } = await admin.auth().createUser({
+      email,
+      password,
+    });
+    res.status(201).json({ message: 'User created', uid: user.uid });
+  } catch (err) {
+    console.log(err);
+    res.status(400).json({ message: 'Error creating user' });
+  }
+});
+
+app.post('/login', async (req, res) => {
+  const { email, password } = req.body;
+  try {
+    const { user } = await admin.auth().signInWithEmailAndPassword(email, password);
+    const token = await admin.auth().createCustomToken(user.uid);
+    res.status(200).json({ token });
+  } catch (err) {
+    console.log(err);
+    res.status(401).json({ message: 'Invalid credentials' });
+  }
+});
+
+// app.get('/protected', verifyToken, async (req, res) => {
+//   res.status(200).json({ message: 'Protected route accessed' });
+// });
+
+async function verifyToken(req, res, next) {
+  const bearerHeader = req.headers.authorization;
+  if (!bearerHeader) {
+    return res.status(401).json({ message: 'Authorization header missing' });
+  }
+  const token = bearerHeader.split(' ')[1];
+  try {
+    const decodedToken = await admin.auth().verifyIdToken(token);
+    req.userId = decodedToken.uid;
+    next();
+  } catch (err) {
+    console.log(err);
+    res.status(401).json({ message: 'Invalid token' });
+  }
+}
 
 const handleOptions = (req, res) => {
   res.setHeader('Access-Control-Max-Age', '1728000').set(corsHeaders).sendStatus(204);
